@@ -1,69 +1,93 @@
+from flask import Flask, request, session, jsonify
 import secrets
 import time
-import requests
-from urllib.parse import quote_plus
-from flask import Flask, redirect, request
 
 app = Flask(__name__)
+
+# REQUIRED for sessions
 app.secret_key = secrets.token_hex(32)
 
-# simple in-memory token store
-VALID_TOKENS = {}
+# In-memory storage (use Redis/DB later if you want)
+TOKENS = {}
+KEYS = {}
 
-LINKJUST_API_KEY = "cb67f89fc200c832a9cbd93b926ecedba0f49151"
-BASE_URL = "https://testtt-gzh8.onrender.com"
-
-
-@app.route("/start")
-def start():
-    # generate token
-    token = secrets.token_hex(16)
-
-    VALID_TOKENS[token] = {
-        "used": False,
-        "created": time.time()
-    }
-
-    # destination MUST be urlencoded
-    destination = f"{BASE_URL}/genkey?token={token}"
-    encoded_destination = quote_plus(destination)
-
-    api_url = (
-        "https://linkjust.com/api"
-        f"?api={LINKJUST_API_KEY}"
-        f"&url={encoded_destination}"
-        f"&alias=key-{token[:6]}"
-    )
-
-    try:
-        r = requests.get(api_url, timeout=10)
-        data = r.json()
-    except Exception:
-        return "LinkJust API error", 500
-
-    if data.get("status") != "success":
-        return f"LinkJust error: {data.get('message')}", 500
-
-    return redirect(data["shortenedUrl"])
+TOKEN_LIFETIME = 60 * 10   # 10 minutes
+KEY_LIFETIME = 60 * 60 * 24  # 24 hours
 
 
+# -----------------------------
+# KEY GENERATION PAGE
+# -----------------------------
 @app.route("/genkey")
 def genkey():
-    token = request.args.get("token")
+    now = time.time()
 
-    if not token or token not in VALID_TOKENS:
-        return "Invalid token", 403
+    # If user already generated a key (ANTI REFRESH)
+    if "token" in session:
+        token = session["token"]
+        if token in TOKENS:
+            data = TOKENS[token]
+            return f"""
+            <h2>Your Key</h2>
+            <p style="font-size:20px;">{data['key']}</p>
+            <p>Expires in 24 hours</p>
+            """
 
-    if VALID_TOKENS[token]["used"]:
-        return "Token already used", 403
+    # First legit visit after LinkJust
+    token = secrets.token_hex(16)
+    key = secrets.token_hex(32)
 
-    # mark token as used
-    VALID_TOKENS[token]["used"] = True
+    TOKENS[token] = {
+        "key": key,
+        "created": now,
+        "used": False
+    }
 
-    # generate final key
-    user_key = secrets.token_hex(24)
+    KEYS[key] = {
+        "created": now,
+        "expires": now + KEY_LIFETIME,
+        "used": False
+    }
+
+    session["token"] = token
 
     return f"""
-    <h1>Your Key</h1>
-    <p>{user_key}</p>
+    <h2>Your Key</h2>
+    <p style="font-size:20px;">{key}</p>
+    <p>Do not refresh or share this key.</p>
     """
+
+
+# -----------------------------
+# VERIFY KEY (APP USES THIS)
+# -----------------------------
+@app.route("/verify")
+def verify():
+    key = request.args.get("key")
+    if not key:
+        return jsonify({"valid": False, "reason": "No key"}), 400
+
+    data = KEYS.get(key)
+    if not data:
+        return jsonify({"valid": False, "reason": "Invalid key"}), 403
+
+    if data["used"]:
+        return jsonify({"valid": False, "reason": "Key already used"}), 403
+
+    if time.time() > data["expires"]:
+        return jsonify({"valid": False, "reason": "Key expired"}), 403
+
+    data["used"] = True
+    return jsonify({"valid": True})
+
+
+# -----------------------------
+# HEALTH CHECK
+# -----------------------------
+@app.route("/")
+def home():
+    return "Key system running"
+
+
+if __name__ == "__main__":
+    app.run()
