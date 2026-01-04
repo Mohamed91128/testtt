@@ -4,7 +4,6 @@ import uuid
 import json
 import os
 import secrets
-import requests
 from cryptography.fernet import Fernet
 
 app = Flask(__name__)
@@ -13,14 +12,14 @@ app = Flask(__name__)
 
 DB_FILE = "tokens.json"
 
-# Fernet key (KEEP THIS SECRET)
+# KEEP THIS SECRET
 ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
-# LinkJust API
+# Your LinkJust API key (USED ONLY IN URL, NOT API CALL)
 LINKJUST_API_KEY = "cb67f89fc200c832a9cbd93b926ecedba0f49151"
 
-# Your Render domain (NO trailing slash)
+# Your Render URL (NO trailing slash)
 BASE_URL = "https://testtt-gzh8.onrender.com"
 
 # ================== DB HELPERS ==================
@@ -41,33 +40,17 @@ def save_db(db):
 def start():
     token = secrets.token_hex(16)
 
-    # Destination AFTER LinkJust
+    # Where LinkJust should send the user AFTER ads
     destination = f"{BASE_URL}/genkey?token={token}"
 
-    # LinkJust TEXT MODE (OFFICIAL)
-    api_url = (
-        "https://linkjust.com/api"
-        f"?api={LINKJUST_API_KEY}"
-        f"&url={destination}"
-        "&format=text"
+    # LinkJust browser redirect (NO SERVER API CALL)
+    linkjust_url = (
+        "https://linkjust.com/"
+        "?api=" + LINKJUST_API_KEY +
+        "&url=" + destination
     )
 
-    try:
-        r = requests.get(api_url, timeout=10)
-    except Exception as e:
-        return f"LinkJust request failed: {e}", 500
-
-    short_url = r.text.strip()
-
-    # Validate LinkJust response
-    if not short_url.startswith("http"):
-        return (
-            "<h3>LinkJust API Error</h3>"
-            f"<pre>{short_url}</pre>",
-            500
-        )
-
-    return redirect(short_url)
+    return redirect(linkjust_url)
 
 # ================== GENKEY ==================
 
