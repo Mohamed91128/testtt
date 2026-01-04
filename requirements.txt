@@ -5,5 +5,3 @@ cryptography
 pyinstaller
 gunicorn
 requests
-redirect
-secrets
