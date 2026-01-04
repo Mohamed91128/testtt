@@ -7,20 +7,19 @@ import secrets
 import requests
 from cryptography.fernet import Fernet
 
-# ------------------ APP ------------------
-
 app = Flask(__name__)
+
+# ---------------- CONFIG ----------------
 
 DB_FILE = "tokens.json"
 
 ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
-RENDER_URL = "https://testtt-gzh8.onrender.com"
 LINKJUST_API_KEY = "cb67f89fc200c832a9cbd93b926ecedba0f49151"
+BASE_URL = "https://testtt-gzh8.onrender.com"
 
-
-# ------------------ DB HELPERS ------------------
+# ---------------- DB HELPERS ----------------
 
 def load_db():
     if not os.path.exists(DB_FILE):
@@ -32,25 +31,27 @@ def save_db(db):
     with open(DB_FILE, "w") as f:
         json.dump(db, f, indent=2)
 
-
-# ------------------ START (LINKJUST ENTRY) ------------------
+# ---------------- START (ENTRY POINT) ----------------
 
 @app.route("/start")
 def start():
     token = secrets.token_hex(16)
 
-    destination = f"{RENDER_URL}/genkey?token={token}"
+    destination = f"{BASE_URL}/genkey?token={token}"
     api_url = f"https://linkjust.com/api?api={LINKJUST_API_KEY}&url={destination}"
 
-    r = requests.get(api_url, timeout=10).json()
+    try:
+        r = requests.get(api_url, timeout=10)
+        data = r.json()
+    except Exception as e:
+        return f"LinkJust API error: {e}", 500
 
-    if r.get("status") == "error":
-        return r.get("message", "Link generation failed"), 500
+    if data.get("status") == "error":
+        return data.get("message", "Link generation failed"), 500
 
-    return redirect(r["shortenedUrl"])
+    return redirect(data["shortenedUrl"])
 
-
-# ------------------ GENKEY ------------------
+# ---------------- GENKEY ----------------
 
 @app.route("/genkey")
 def genkey():
@@ -60,7 +61,7 @@ def genkey():
 
     db = load_db()
 
-    # Refresh-safe: return same key
+    # Anti-refresh → same key
     if token in db:
         return render_template(
             "keygen.html",
@@ -87,8 +88,7 @@ def genkey():
         expires=expires
     )
 
-
-# ------------------ VERIFY ------------------
+# ---------------- VERIFY ----------------
 
 @app.route("/verify")
 def verify():
@@ -116,9 +116,3 @@ def verify():
             return jsonify({"valid": True})
 
     return jsonify({"valid": False, "reason": "Key not found"}), 404
-
-
-# ------------------ LOCAL RUN (OPTIONAL) ------------------
-
-if __name__ == "__main__":
-    app.run(debug=True)
