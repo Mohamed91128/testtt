@@ -4,3 +4,4 @@ pandas
 cryptography
 pyinstaller
 gunicorn
+requests
