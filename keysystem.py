@@ -1,126 +1,120 @@
-from flask import Flask, request, jsonify, render_template, abort, redirect
-from datetime import datetime, timedelta
-import uuid
-import json
-import os
+from flask import Flask, redirect, request, abort, jsonify
 import secrets
-from cryptography.fernet import Fernet
+import requests
+import time
 
 app = Flask(__name__)
 
-# ================== CONFIG ==================
-
-DB_FILE = "tokens.json"
-
-# KEEP THIS SECRET
-ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
-cipher = Fernet(ENCRYPTION_KEY)
-
-# Your LinkJust API key (USED ONLY IN URL, NOT API CALL)
+# ==============================
+# CONFIG
+# ==============================
 LINKJUST_API_KEY = "cb67f89fc200c832a9cbd93b926ecedba0f49151"
-
-# Your Render URL (NO trailing slash)
 BASE_URL = "https://testtt-gzh8.onrender.com"
 
-# ================== DB HELPERS ==================
+# Token storage (use Redis / DB in production)
+tokens = {}
 
-def load_db():
-    if not os.path.exists(DB_FILE):
-        return {}
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
-
-def save_db(db):
-    with open(DB_FILE, "w") as f:
-        json.dump(db, f, indent=2)
-
-# ================== START (ENTRY POINT) ==================
-
+# ==============================
+# STEP 1: START → SEND TO LINKJUST
+# ==============================
 @app.route("/start")
 def start():
     token = secrets.token_hex(16)
 
-    # Where LinkJust should send the user AFTER ads
+    # save token with timestamp
+    tokens[token] = {
+        "used": False,
+        "created": time.time()
+    }
+
     destination = f"{BASE_URL}/genkey?token={token}"
 
-    # LinkJust browser redirect (NO SERVER API CALL)
-    linkjust_url = (
-        "https://linkjust.com/"
-        "?api=" + LINKJUST_API_KEY +
-        "&url=" + destination
+    api_url = (
+        "https://linkjust.com/api"
+        f"?api={LINKJUST_API_KEY}"
+        f"&url={destination}"
     )
 
-    return redirect(linkjust_url)
+    try:
+        r = requests.get(api_url, timeout=10)
+        data = r.json()
+    except Exception as e:
+        return f"LinkJust API error: {e}", 500
 
-# ================== GENKEY ==================
+    if data.get("status") != "success":
+        return f"LinkJust error: {data}", 500
 
+    short_url = data["shortenedUrl"]
+
+    return redirect(short_url)
+
+
+# ==============================
+# STEP 2: AFTER ADS → GENERATE KEY
+# ==============================
 @app.route("/genkey")
 def genkey():
     token = request.args.get("token")
-    if not token:
-        abort(403, "No token provided")
 
-    db = load_db()
+    if not token or token not in tokens:
+        abort(403)
 
-    # Anti-refresh: return same key
-    if token in db:
-        return render_template(
-            "keygen.html",
-            key=db[token]["encrypted"],
-            expires=db[token]["expires"]
-        )
+    token_data = tokens[token]
 
-    raw_key = str(uuid.uuid4())
-    encrypted_key = cipher.encrypt(raw_key.encode()).decode()
-    expires = (datetime.now() + timedelta(hours=24)).isoformat()
+    # prevent refresh abuse
+    if token_data["used"]:
+        return "❌ Token already used", 403
 
-    db[token] = {
-        "key": raw_key,
-        "encrypted": encrypted_key,
-        "expires": expires,
-        "used": False
-    }
+    # expire after 10 minutes
+    if time.time() - token_data["created"] > 600:
+        return "❌ Token expired", 403
 
-    save_db(db)
+    # mark token as used
+    token_data["used"] = True
 
-    return render_template(
-        "keygen.html",
-        key=encrypted_key,
-        expires=expires
-    )
+    # generate the key
+    generated_key = secrets.token_hex(24)
 
-# ================== VERIFY ==================
+    return f"""
+    <html>
+        <head>
+            <title>Your Key</title>
+            <style>
+                body {{
+                    background:#111;
+                    color:#0f0;
+                    font-family: monospace;
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                    height:100vh;
+                }}
+                .box {{
+                    background:#000;
+                    padding:30px;
+                    border:1px solid #0f0;
+                    text-align:center;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="box">
+                <h2>✅ Your Key</h2>
+                <p>{generated_key}</p>
+                <p>Do NOT refresh this page</p>
+            </div>
+        </body>
+    </html>
+    """
 
-@app.route("/verify")
-def verify():
-    encrypted = request.args.get("key")
-    if not encrypted:
-        return jsonify({"valid": False, "reason": "No key provided"}), 400
 
-    try:
-        raw_key = cipher.decrypt(encrypted.encode()).decode()
-    except Exception:
-        return jsonify({"valid": False, "reason": "Invalid encryption"}), 400
+# ==============================
+# HEALTH CHECK
+# ==============================
+@app.route("/")
+def home():
+    return "Keysystem Online"
 
-    db = load_db()
-
-    for token, data in db.items():
-        if data["key"] == raw_key:
-
-            if data["used"]:
-                return jsonify({"valid": False, "reason": "Key already used"}), 403
-
-            if datetime.fromisoformat(data["expires"]) < datetime.now():
-                return jsonify({"valid": False, "reason": "Key expired"}), 403
-
-            db[token]["used"] = True
-            save_db(db)
-
-            return jsonify({"valid": True})
-
-    return jsonify({"valid": False, "reason": "Key not found"}), 404
-
-# ================== RUN ==================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run()
