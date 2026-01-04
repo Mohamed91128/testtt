@@ -9,17 +9,21 @@ from cryptography.fernet import Fernet
 
 app = Flask(__name__)
 
-# ---------------- CONFIG ----------------
+# ================== CONFIG ==================
 
 DB_FILE = "tokens.json"
 
+# Fernet key (KEEP THIS SECRET)
 ENCRYPTION_KEY = b"hQ4S1jT1TfQcQk_XLhJ7Ky1n3ht9ABhxqYUt09Ax0CM="
 cipher = Fernet(ENCRYPTION_KEY)
 
+# LinkJust API
 LINKJUST_API_KEY = "cb67f89fc200c832a9cbd93b926ecedba0f49151"
+
+# Your Render domain (NO trailing slash)
 BASE_URL = "https://testtt-gzh8.onrender.com"
 
-# ---------------- DB HELPERS ----------------
+# ================== DB HELPERS ==================
 
 def load_db():
     if not os.path.exists(DB_FILE):
@@ -31,37 +35,51 @@ def save_db(db):
     with open(DB_FILE, "w") as f:
         json.dump(db, f, indent=2)
 
-# ---------------- START (ENTRY POINT) ----------------
+# ================== START (ENTRY POINT) ==================
 
 @app.route("/start")
 def start():
     token = secrets.token_hex(16)
 
+    # Destination AFTER LinkJust
     destination = f"{BASE_URL}/genkey?token={token}"
-    api_url = f"https://linkjust.com/api?api={LINKJUST_API_KEY}&url={destination}"
+
+    # LinkJust TEXT MODE (OFFICIAL)
+    api_url = (
+        "https://linkjust.com/api"
+        f"?api={LINKJUST_API_KEY}"
+        f"&url={destination}"
+        "&format=text"
+    )
 
     try:
         r = requests.get(api_url, timeout=10)
-        data = r.json()
     except Exception as e:
-        return f"LinkJust API error: {e}", 500
+        return f"LinkJust request failed: {e}", 500
 
-    if data.get("status") == "error":
-        return data.get("message", "Link generation failed"), 500
+    short_url = r.text.strip()
 
-    return redirect(data["shortenedUrl"])
+    # Validate LinkJust response
+    if not short_url.startswith("http"):
+        return (
+            "<h3>LinkJust API Error</h3>"
+            f"<pre>{short_url}</pre>",
+            500
+        )
 
-# ---------------- GENKEY ----------------
+    return redirect(short_url)
+
+# ================== GENKEY ==================
 
 @app.route("/genkey")
 def genkey():
     token = request.args.get("token")
     if not token:
-        abort(403, "No token")
+        abort(403, "No token provided")
 
     db = load_db()
 
-    # Anti-refresh → same key
+    # Anti-refresh: return same key
     if token in db:
         return render_template(
             "keygen.html",
@@ -88,13 +106,13 @@ def genkey():
         expires=expires
     )
 
-# ---------------- VERIFY ----------------
+# ================== VERIFY ==================
 
 @app.route("/verify")
 def verify():
     encrypted = request.args.get("key")
     if not encrypted:
-        return jsonify({"valid": False, "reason": "No key"}), 400
+        return jsonify({"valid": False, "reason": "No key provided"}), 400
 
     try:
         raw_key = cipher.decrypt(encrypted.encode()).decode()
@@ -105,6 +123,7 @@ def verify():
 
     for token, data in db.items():
         if data["key"] == raw_key:
+
             if data["used"]:
                 return jsonify({"valid": False, "reason": "Key already used"}), 403
 
@@ -113,6 +132,12 @@ def verify():
 
             db[token]["used"] = True
             save_db(db)
+
             return jsonify({"valid": True})
 
     return jsonify({"valid": False, "reason": "Key not found"}), 404
+
+# ================== RUN ==================
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
